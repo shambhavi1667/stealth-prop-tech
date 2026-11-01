@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
+import { cors } from 'hono/cors'
 
 const app = new Hono<{ Bindings: Env }>()
+app.use('*', cors())
 
 app.get('/api/health', (c) => c.json({ status: 'ok' }))
 
@@ -257,6 +259,48 @@ app.get('/api/homes/:homeId/balances', async (c) => {
   }))
 
   return c.json({ balances })
+})
+
+// GET /api/homes/:homeId/bills
+app.get('/api/homes/:homeId/bills', async (c) => {
+  const homeId = Number(c.req.param('homeId'))
+
+  const home = await c.env.DB.prepare('SELECT id FROM homes WHERE id = ?').bind(homeId).first()
+
+  if (!home) {
+    return c.json({ error: 'home not found' }, 404)
+  }
+
+  const billsResult = await c.env.DB.prepare(
+    'SELECT id, home_id AS homeId, title, total_cents AS totalCents FROM bills WHERE home_id = ? ORDER BY id ASC',
+  )
+    .bind(homeId)
+    .all<{ id: number; homeId: number; title: string; totalCents: number }>()
+
+  const bills = await Promise.all(
+    billsResult.results.map(async (bill) => {
+      const sharesResult = await c.env.DB.prepare(
+        'SELECT id, member_id AS memberId, amount_cents AS amountCents, paid_at AS paidAt FROM shares WHERE bill_id = ? ORDER BY id ASC',
+      )
+        .bind(bill.id)
+        .all<{ id: number; memberId: number; amountCents: number; paidAt: string | null }>()
+
+      return {
+        id: String(bill.id),
+        homeId: String(bill.homeId),
+        title: bill.title,
+        totalCents: bill.totalCents,
+        shares: sharesResult.results.map((s) => ({
+          id: String(s.id),
+          memberId: String(s.memberId),
+          amountCents: s.amountCents,
+          paidAt: s.paidAt,
+        })),
+      }
+    }),
+  )
+
+  return c.json({ bills })
 })
 
 export default app
